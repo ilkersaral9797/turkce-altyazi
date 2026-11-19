@@ -11,8 +11,8 @@ android {
         applicationId = "com.altyazi.canli"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "1.3"
+        versionCode = 5
+        versionName = "1.4"
         // Sadece günümüz telefonlarının işlemci tipi (Galaxy A52 dahil): dosya çok küçülür
         ndk {
             abiFilters += "arm64-v8a"

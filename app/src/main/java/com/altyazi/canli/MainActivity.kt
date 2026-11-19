@@ -74,6 +74,10 @@ class MainActivity : Activity(), RecognitionListener {
     private var seq = 0
     private var lastPartialAt = 0L
 
+    /** Uzun konuşmayı beklemeden parça parça altyazıya çevirmek için */
+    private var committedWords = 0
+    private val chunkWords = 8
+
     private var fontSp = 30f
     private var showEnglish = true
 
@@ -297,12 +301,16 @@ class MainActivity : Activity(), RecognitionListener {
 
     private fun listenOnce() {
         if (!listening) return
+        committedWords = 0
         val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, "en-US")
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, packageName)
+            // Cümle sonunu daha kısa sessizlikte kabul et (bazı servisler yok sayabilir)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 700L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 500L)
         }
         try {
             recognizer?.startListening(intent)
@@ -326,10 +334,31 @@ class MainActivity : Activity(), RecognitionListener {
             ?.firstOrNull()?.trim().orEmpty()
         if (text.isEmpty()) return
         showEnglishText(text)
+
+        val words = text.split(Regex("\\s+"))
+        if (committedWords > words.size) committedWords = 0 // servis metni baştan düzelttiyse
+        val pending = words.drop(committedWords)
+
+        // Konuşma uzadıysa cümle bitmesini bekleme: ilk kısmı hemen altyazı yap.
+        // Son 2 kelimeyi bekletiyoruz çünkü servis onları hâlâ değiştirebilir.
+        if (pending.size >= chunkWords) {
+            val take = pending.size - 2
+            val chunk = pending.take(take).joinToString(" ")
+            committedWords += take
+            seq++
+            livePartial = null
+            heard++
+            updateDiag()
+            translate(chunk, isFinal = true)
+            val rest = pending.drop(take).joinToString(" ")
+            if (rest.isNotBlank()) translate(rest, isFinal = false)
+            return
+        }
+
         val now = SystemClock.uptimeMillis()
-        if (now - lastPartialAt < 250) return
+        if (now - lastPartialAt < 120) return
         lastPartialAt = now
-        translate(text, isFinal = false)
+        translate(pending.joinToString(" "), isFinal = false)
     }
 
     override fun onResults(results: Bundle?) {
@@ -337,13 +366,16 @@ class MainActivity : Activity(), RecognitionListener {
         val text = results
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             ?.firstOrNull()?.trim().orEmpty()
+        val words = if (text.isEmpty()) emptyList() else text.split(Regex("\\s+"))
+        val remainder = if (committedWords < words.size) words.drop(committedWords).joinToString(" ") else ""
+        committedWords = 0
         seq++ // bu cümleye ait geç gelen anlık çevirileri yok say
         livePartial = null
-        if (text.isNotEmpty()) {
+        if (remainder.isNotBlank()) {
             heard++
             updateDiag()
             showEnglishText(text)
-            translate(text, isFinal = true)
+            translate(remainder, isFinal = true)
         } else {
             render()
         }
