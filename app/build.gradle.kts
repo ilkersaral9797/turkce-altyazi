@@ -11,8 +11,12 @@ android {
         applicationId = "com.altyazi.canli"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0"
+        versionCode = 2
+        versionName = "1.1"
+        // Sadece günümüz telefonlarının işlemci tipi (Galaxy A52 dahil): dosya çok küçülür
+        ndk {
+            abiFilters += "arm64-v8a"
+        }
     }
 
     // Sabit imza anahtarı: her yeni sürüm eskisinin üstüne kurulabilsin diye.
@@ -22,6 +26,8 @@ android {
             storePassword = "android"
             keyAlias = "androiddebugkey"
             keyPassword = "android"
+            enableV1Signing = true
+            enableV2Signing = true
         }
     }
 
