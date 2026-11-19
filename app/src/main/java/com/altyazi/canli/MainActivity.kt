@@ -46,6 +46,15 @@ class MainActivity : Activity(), RecognitionListener {
     private var heard = 0
     private var translatedCount = 0
     private var lastError = "yok"
+    private var readyCount = 0
+    private var beginCount = 0
+    private var partialCount = 0
+    private var resultCount = 0
+    private val errorCounts = LinkedHashMap<Int, Int>()
+
+    /** Telefonda bulunan ses tanıma servisleri; null = telefonun varsayılanı */
+    private val services = ArrayList<ComponentName?>()
+    private var serviceIndex = 0
 
     private var recognizer: SpeechRecognizer? = null
     private var translator: Translator? = null
@@ -86,6 +95,8 @@ class MainActivity : Activity(), RecognitionListener {
         btnEn = findViewById(R.id.toggleEn)
         tvDiag = findViewById(R.id.diag)
         level = findViewById(R.id.level)
+        loadServices()
+        findViewById<Button>(R.id.switchService).setOnClickListener { switchService() }
 
         val prefs = getSharedPreferences("ayarlar", MODE_PRIVATE)
         fontSp = prefs.getFloat("yazi", 30f)
@@ -225,31 +236,63 @@ class MainActivity : Activity(), RecognitionListener {
 
     private fun createRecognizer() {
         recognizer?.let { try { it.destroy() } catch (e: Exception) {} }
-        val google = findGoogleRecognizer()
-        recognizer = if (google != null) {
-            serviceName = "Google"
-            SpeechRecognizer.createSpeechRecognizer(this, google)
-        } else {
-            serviceName = "telefonun varsayılanı"
-            SpeechRecognizer.createSpeechRecognizer(this)
+        val comp = services.getOrNull(serviceIndex)
+        serviceName = serviceLabel(comp)
+        recognizer = try {
+            if (comp != null) SpeechRecognizer.createSpeechRecognizer(this, comp)
+            else SpeechRecognizer.createSpeechRecognizer(this)
+        } catch (e: Exception) {
+            lastError = "servis açılamadı"
+            null
         }
         recognizer?.setRecognitionListener(this)
         updateDiag()
     }
 
-    /** Samsung telefonlarda varsayılan ses tanıma Samsung'unki olabilir; varsa Google'ınkini seç. */
-    private fun findGoogleRecognizer(): ComponentName? {
-        val services = try {
+    /** Telefondaki ses tanıma servislerini bulur; Google'ınkiler öne alınır. */
+    private fun loadServices() {
+        services.clear()
+        val found = try {
             packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
         } catch (e: Exception) {
             emptyList()
         }
-        val preferred = listOf("com.google.android.googlequicksearchbox", "com.google.android.tts", "com.google.android.as")
-        for (pkg in preferred) {
-            val s = services.firstOrNull { it.serviceInfo?.packageName == pkg } ?: continue
-            return ComponentName(s.serviceInfo.packageName, s.serviceInfo.name)
+        val comps = found.mapNotNull { it.serviceInfo }.map { ComponentName(it.packageName, it.name) }
+        val order = listOf("com.google.android.googlequicksearchbox", "com.google.android.tts", "com.google.android.as")
+        val sorted = comps.sortedBy { c -> order.indexOf(c.packageName).let { if (it < 0) 99 else it } }
+        services.addAll(sorted)
+        services.add(null)
+        val saved = getSharedPreferences("ayarlar", MODE_PRIVATE).getString("servis", null)
+        val idx = services.indexOfFirst { (it?.flattenToString() ?: "varsayilan") == saved }
+        serviceIndex = if (idx >= 0) idx else 0
+        serviceName = serviceLabel(services.getOrNull(serviceIndex))
+    }
+
+    private fun serviceLabel(c: ComponentName?): String {
+        if (c == null) return "Telefonun varsayılanı"
+        val base = when {
+            c.packageName == "com.google.android.googlequicksearchbox" -> "Google uygulaması"
+            c.packageName == "com.google.android.tts" -> "Google Konuşma Hizmetleri"
+            c.packageName == "com.google.android.as" -> "Android Sistem Zekası"
+            c.packageName.startsWith("com.samsung") -> "Samsung"
+            else -> c.packageName
         }
-        return null
+        return base + " (" + c.className.substringAfterLast('.') + ")"
+    }
+
+    private fun switchService() {
+        val wasListening = listening
+        if (wasListening) stopListening("")
+        serviceIndex = (serviceIndex + 1) % services.size
+        val comp = services[serviceIndex]
+        getSharedPreferences("ayarlar", MODE_PRIVATE).edit()
+            .putString("servis", comp?.flattenToString() ?: "varsayilan").apply()
+        serviceName = serviceLabel(comp)
+        readyCount = 0; beginCount = 0; partialCount = 0; resultCount = 0; heard = 0; translatedCount = 0
+        errorCounts.clear(); lastError = "yok"
+        updateDiag()
+        status("Servis: $serviceName (" + (serviceIndex + 1) + "/" + services.size + ")")
+        if (wasListening) startListening()
     }
 
     private fun listenOnce() {
@@ -276,6 +319,8 @@ class MainActivity : Activity(), RecognitionListener {
     }
 
     override fun onPartialResults(partialResults: Bundle?) {
+        partialCount++
+        updateDiag()
         val text = partialResults
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             ?.firstOrNull()?.trim().orEmpty()
@@ -288,6 +333,7 @@ class MainActivity : Activity(), RecognitionListener {
     }
 
     override fun onResults(results: Bundle?) {
+        resultCount++
         val text = results
             ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
             ?.firstOrNull()?.trim().orEmpty()
@@ -306,6 +352,8 @@ class MainActivity : Activity(), RecognitionListener {
 
     override fun onError(error: Int) {
         if (!listening) return
+        errorCounts[error] = (errorCounts[error] ?: 0) + 1
+        updateDiag()
         if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
             lastError = errorName(error)
             updateDiag()
@@ -332,8 +380,15 @@ class MainActivity : Activity(), RecognitionListener {
         }
     }
 
-    override fun onReadyForSpeech(params: Bundle?) {}
-    override fun onBeginningOfSpeech() {}
+    override fun onReadyForSpeech(params: Bundle?) {
+        readyCount++
+        updateDiag()
+    }
+
+    override fun onBeginningOfSpeech() {
+        beginCount++
+        updateDiag()
+    }
     override fun onRmsChanged(rmsdB: Float) {
         level.progress = ((rmsdB + 2f) * 8f).toInt().coerceIn(0, 100)
     }
@@ -405,7 +460,9 @@ class MainActivity : Activity(), RecognitionListener {
     }
 
     private fun updateDiag() {
-        tvDiag.text = "Ses tanıma: $serviceName · Çeviri: $translatorState · Duyulan: $heard · Çevrilen: $translatedCount · Son hata: $lastError"
+        val errs = if (errorCounts.isEmpty()) "yok" else errorCounts.entries.joinToString(", ") { "${it.key}×${it.value}" }
+        tvDiag.text = "Ses tanıma: $serviceName\nÇeviri: $translatorState · Duyulan: $heard · Çevrilen: $translatedCount\n" +
+            "Hazır: $readyCount · Konuşma: $beginCount · Ara sonuç: $partialCount · Sonuç: $resultCount\nHata kodları: $errs · Son hata: $lastError"
     }
 
     private fun status(message: String) {

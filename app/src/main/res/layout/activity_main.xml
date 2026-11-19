@@ -38,6 +38,18 @@
         android:textColor="@color/mute"
         android:textSize="12sp" />
 
+    <Button
+        android:id="@+id/switchService"
+        android:layout_width="wrap_content"
+        android:layout_height="44dp"
+        android:layout_marginStart="16dp"
+        android:layout_marginTop="4dp"
+        android:backgroundTint="@color/button"
+        android:text="Ses tanıma servisini değiştir"
+        android:textAllCaps="false"
+        android:textColor="@color/ink"
+        android:textSize="13sp" />
+
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="0dp"
