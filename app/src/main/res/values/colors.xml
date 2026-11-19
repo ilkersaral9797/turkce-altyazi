@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="screen">#0D0F13</color>
+    <color name="panel">#161920</color>
+    <color name="button">#262A33</color>
+    <color name="ink">#F5F3EF</color>
+    <color name="mute">#9BA1AC</color>
+    <color name="accent">#FF6B57</color>
+    <color name="live">#35C2AE</color>
+</resources>
