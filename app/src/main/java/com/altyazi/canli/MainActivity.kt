@@ -2,6 +2,7 @@ package com.altyazi.canli
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioManager
@@ -10,11 +11,13 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.speech.RecognitionListener
+import android.speech.RecognitionService
 import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.View
 import android.view.WindowManager
 import android.widget.Button
+import android.widget.ProgressBar
 import android.widget.TextView
 import com.google.mlkit.common.model.DownloadConditions
 import com.google.mlkit.nl.translate.TranslateLanguage
@@ -34,6 +37,15 @@ class MainActivity : Activity(), RecognitionListener {
     private lateinit var tvEnglish: TextView
     private lateinit var btnStart: Button
     private lateinit var btnEn: Button
+    private lateinit var tvDiag: TextView
+    private lateinit var level: ProgressBar
+
+    // Teşhis bilgileri
+    private var serviceName = "?"
+    private var translatorState = "hazırlanıyor"
+    private var heard = 0
+    private var translatedCount = 0
+    private var lastError = "yok"
 
     private var recognizer: SpeechRecognizer? = null
     private var translator: Translator? = null
@@ -72,6 +84,8 @@ class MainActivity : Activity(), RecognitionListener {
         tvEnglish = findViewById(R.id.english)
         btnStart = findViewById(R.id.start)
         btnEn = findViewById(R.id.toggleEn)
+        tvDiag = findViewById(R.id.diag)
+        level = findViewById(R.id.level)
 
         val prefs = getSharedPreferences("ayarlar", MODE_PRIVATE)
         fontSp = prefs.getFloat("yazi", 30f)
@@ -90,6 +104,7 @@ class MainActivity : Activity(), RecognitionListener {
         }
 
         setupTranslator()
+        updateDiag()
     }
 
     // ---------- Çeviri (ML Kit, telefonun içinde) ----------
@@ -105,10 +120,14 @@ class MainActivity : Activity(), RecognitionListener {
         t.downloadModelIfNeeded(DownloadConditions.Builder().build())
             .addOnSuccessListener {
                 modelReady = true
+                translatorState = "hazır"
+                updateDiag()
                 if (!listening) status("Hazır. Başlat'a dokun.")
             }
-            .addOnFailureListener {
-                status("Çeviri modeli indirilemedi. İnternete bağlanıp uygulamayı yeniden aç.")
+            .addOnFailureListener { e ->
+                translatorState = "indirilemedi"
+                updateDiag()
+                status("Çeviri modeli indirilemedi (" + (e.message ?: "bilinmeyen hata") + "). İnternete bağlanıp uygulamayı yeniden aç.")
             }
     }
 
@@ -122,13 +141,17 @@ class MainActivity : Activity(), RecognitionListener {
         t.translate(english)
             .addOnSuccessListener { turkish ->
                 if (isFinal) {
+                    translatedCount++
+                    updateDiag()
                     commit(turkish)
                 } else if (mySeq == seq) {
                     livePartial = turkish
                     render()
                 }
             }
-            .addOnFailureListener {
+            .addOnFailureListener { e ->
+                lastError = "çeviri: " + (e.message ?: "?")
+                updateDiag()
                 if (isFinal) commit("(Çevrilemedi)")
             }
     }
@@ -194,6 +217,7 @@ class MainActivity : Activity(), RecognitionListener {
         recognizer = null
         livePartial = null
         render()
+        level.progress = 0
         unmuteBeeps()
         btnStart.text = "Başlat"
         status(message)
@@ -201,7 +225,31 @@ class MainActivity : Activity(), RecognitionListener {
 
     private fun createRecognizer() {
         recognizer?.let { try { it.destroy() } catch (e: Exception) {} }
-        recognizer = SpeechRecognizer.createSpeechRecognizer(this).also { it.setRecognitionListener(this) }
+        val google = findGoogleRecognizer()
+        recognizer = if (google != null) {
+            serviceName = "Google"
+            SpeechRecognizer.createSpeechRecognizer(this, google)
+        } else {
+            serviceName = "telefonun varsayılanı"
+            SpeechRecognizer.createSpeechRecognizer(this)
+        }
+        recognizer?.setRecognitionListener(this)
+        updateDiag()
+    }
+
+    /** Samsung telefonlarda varsayılan ses tanıma Samsung'unki olabilir; varsa Google'ınkini seç. */
+    private fun findGoogleRecognizer(): ComponentName? {
+        val services = try {
+            packageManager.queryIntentServices(Intent(RecognitionService.SERVICE_INTERFACE), 0)
+        } catch (e: Exception) {
+            emptyList()
+        }
+        val preferred = listOf("com.google.android.googlequicksearchbox", "com.google.android.tts", "com.google.android.as")
+        for (pkg in preferred) {
+            val s = services.firstOrNull { it.serviceInfo?.packageName == pkg } ?: continue
+            return ComponentName(s.serviceInfo.packageName, s.serviceInfo.name)
+        }
+        return null
     }
 
     private fun listenOnce() {
@@ -246,6 +294,8 @@ class MainActivity : Activity(), RecognitionListener {
         seq++ // bu cümleye ait geç gelen anlık çevirileri yok say
         livePartial = null
         if (text.isNotEmpty()) {
+            heard++
+            updateDiag()
             showEnglishText(text)
             translate(text, isFinal = true)
         } else {
@@ -256,7 +306,14 @@ class MainActivity : Activity(), RecognitionListener {
 
     override fun onError(error: Int) {
         if (!listening) return
+        if (error != SpeechRecognizer.ERROR_NO_MATCH && error != SpeechRecognizer.ERROR_SPEECH_TIMEOUT) {
+            lastError = errorName(error)
+            updateDiag()
+        }
         when (error) {
+            12, 13 -> { // dil desteklenmiyor / dil paketi yok
+                stopListening("Ses tanıma İngilizceyi desteklemiyor. Google uygulamasını güncelle; Ayarlar > Genel yönetim > Dil'den İngilizce ses tanımayı indir.")
+            }
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS ->
                 stopListening("Mikrofon izni yok. Ayarlardan izin verip tekrar Başlat'a dokun.")
             SpeechRecognizer.ERROR_NETWORK,
@@ -277,7 +334,9 @@ class MainActivity : Activity(), RecognitionListener {
 
     override fun onReadyForSpeech(params: Bundle?) {}
     override fun onBeginningOfSpeech() {}
-    override fun onRmsChanged(rmsdB: Float) {}
+    override fun onRmsChanged(rmsdB: Float) {
+        level.progress = ((rmsdB + 2f) * 8f).toInt().coerceIn(0, 100)
+    }
     override fun onBufferReceived(buffer: ByteArray?) {}
     override fun onEndOfSpeech() {}
     override fun onEvent(eventType: Int, params: Bundle?) {}
@@ -326,6 +385,27 @@ class MainActivity : Activity(), RecognitionListener {
 
     private fun updateEnButton() {
         btnEn.text = if (showEnglish) "EN gizle" else "EN göster"
+    }
+
+    private fun errorName(code: Int): String = when (code) {
+        1 -> "ağ zaman aşımı (1)"
+        2 -> "ağ hatası (2)"
+        3 -> "mikrofon/ses kaydı (3)"
+        4 -> "sunucu (4)"
+        5 -> "istemci (5)"
+        6 -> "konuşma yok (6)"
+        7 -> "anlaşılmadı (7)"
+        8 -> "tanıyıcı meşgul (8)"
+        9 -> "izin yok (9)"
+        10 -> "çok fazla istek (10)"
+        11 -> "sunucu bağlantısı koptu (11)"
+        12 -> "dil desteklenmiyor (12)"
+        13 -> "dil paketi yok (13)"
+        else -> "kod $code"
+    }
+
+    private fun updateDiag() {
+        tvDiag.text = "Ses tanıma: $serviceName · Çeviri: $translatorState · Duyulan: $heard · Çevrilen: $translatedCount · Son hata: $lastError"
     }
 
     private fun status(message: String) {
